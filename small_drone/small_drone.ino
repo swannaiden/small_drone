@@ -7,16 +7,16 @@
 #include "SBUS.h"
 #include "TeensyThreads.h"
 
-const int chipSelect = 4;
+const int chipSelect = BUILTIN_SDCARD;
 
-
+int speedtest;
 // SBUS setup
 bool isSbusAvailable = 0;
 uint16_t channels[16];
 bool failSafe;
 bool lostFrame;
 SBUS x8r(Serial2);
-bool armed = true;
+bool armed = false;
 
 
 // Lidar Setup
@@ -37,6 +37,8 @@ bool isSonarAvailable = 0;
 SFE_UBLOX_GPS myGPS;
 #include <SoftwareSerial.h>
 long lastTime = 0; //Simple local timer. Limits amount of I2C traffic to Ublox module.
+long lastArmed = 0;
+long lastFlush = 0;
 byte minSat = 0;
 long latitude;
 long longitude;
@@ -48,11 +50,15 @@ bool isGPSAvailable = 0;
 float quats_f[4],rates_f[3],acc_f[3];
 byte in[100];
 union {unsigned short s; byte b[2];} checksum;
-union {float f; char c[4];} tmp;
+union {float f; char c[4]; int32_t i; uint32_t u;} tmp;
+union {double d; char c[8];} tmp_8;
+char dataMsg[106];
 bool isIMUAvailable = 0;
 
 //blackbox setup
 //char dataString[150];
+String name;
+File myfile;
 
 void setup() {
 
@@ -79,9 +85,9 @@ void setup() {
   Serial.println("x");
 
 
-  Serial.print("Initializing blackbox...");
-  Serial8.begin(115200);
-  delay(100);
+  //Serial.print("Initializing blackbox...");
+  //Serial8.begin(115200);
+  //delay(100);
   //while(!Serial8) {};
   Serial.println("X");
   
@@ -155,20 +161,59 @@ void setup() {
   }
   initIMU();
   
+
+  Serial.print("Initializing SD card...");
+
+  // see if the card is present and can be initialized:
+  if (!SD.begin(chipSelect)) {
+  //if (!SD.sdfs.begin(SdioConfig(DMA_SDIO))) {
+    Serial.println("Card failed, or not present");
+    while (1) {
+      // No SD card, so don't do anything more - stay stuck here
+    }
+  }
+  Serial.println("card initialized.");
+//  String test = SD.sdfs.ls();
+//  Serial.println(test);
+//  Serial.println(test.indexOf("Japan"));
+
+  // increase SD card frequency
+  //bool ok = SD.sdfs.begin(SdSpiConfig(chipSelect, SHARED_SPI, SD_SCK_MHZ(16)));
+
+//  for(int i = 0; i < 100; i++) {
+//    file.getFilename(directory[i]);
+//    if(directory[i] == NULL) {
+//      break;
+//    }
+//  }
+//
+//  for(int i = 0; i < 
+
+
+  delay(1000);
+  threads.setSliceMicros(100);
+  threads.addThread(readSBUS_thread);
+  threads.addThread(readLidar_thread);
+  threads.addThread(readSonar_thread);
+  threads.addThread(readGPS_thread);
+  threads.addThread(readIMU_thread);
   Serial.println("attaching threads");
 
-//  threads.addThread(readSBUS_thread);
-//  threads.addThread(readLidar_thread);
-//  threads.addThread(readSonar_thread);
-//  threads.addThread(readGPS_thread);
-  threads.addThread(readIMU_thread);
+
+
+  
+  
+
+  
+
+  
 }
 
 void loop() {
   // put your main code here, to run repeatedly:
-  int lastTime = micros();
 
-
+  //Threads::Mutex mylock;
+  //mylock.lock();
   //these will go into threads 
 //  readSBUS();
 //  isSbusAvailable = 0;
@@ -180,67 +225,226 @@ void loop() {
 //  isGPSAvailable = 0;
 
   // write to SD card if somthing has changed
-  if(isSbusAvailable || isLidarAvailable || isSonarAvailable || isGPSAvailable || isIMUAvailable) {
-    String dataString = "";
-    dataString += micros(); dataString += ",";
-    dataString += armed; dataString += ",";
+  //delay(100);
 
-    dataString += isSbusAvailable; dataString += ",";
-    dataString += channels[0]; dataString += ",";
-    dataString += channels[1]; dataString += ",";
-    dataString += channels[2]; dataString += ",";
-    dataString += channels[3]; dataString += ",";
-    dataString += channels[4]; dataString += ",";
-    dataString += channels[5]; dataString += ",";
-    dataString += channels[6]; dataString += ",";
-    dataString += channels[7]; dataString += ",";
-    dataString += channels[8]; dataString += ",";
+  // quad has just been armed, open sd log
+//  if(!armed) {
+  if(!armed && channels[4] > 1100 && channels[4] < 2000 && millis() - lastArmed > 500) {
+     
+     // check for log name
 
-    dataString += isLidarAvailable; dataString += ",";
-    dataString += String(range, 7);
-    dataString += ",";
+      //SD.begin(chipSelect);
+      for(int i = 0; i < 512; i++) {
+        name = "log"+String(i)+".txt";
+//        String ls = SD.sdfs.ls();
+//        Serial.println(i);
+//        Serial.println(name);
+//        Serial.println(ls);
+//        Serial.println(ls.indexOf(name));
+        if(!SD.exists(name.c_str())) {
+          break;
+        }
+      }
 
-    dataString += isSonarAvailable; dataString += ",";
-    dataString += String(sonarValue, 7);
-    dataString += ",";
+      
+     //bool ok = SD.sdfs.begin(SdSpiConfig(chipSelect, SHARED_SPI, SD_SCK_MHZ(16)));
+     //SD.sdfs.begin(SdioConfig(DMA_SDIO));
+     //delay(50);
 
-    dataString += isGPSAvailable; dataString += ",";
-    dataString += String(latitude, 15);
-    dataString += ",";
-    dataString += String(longitude, 15);
-    dataString += ",";
-    dataString += String(altitude, 15);
-    dataString += ",";
-    dataString += SIV; dataString += ",";
+     
+     armed = 1;
+     //FsFile myfile = SD.sdfs.open(name, O_WRITE | O_CREAT);
+     myfile = SD.open(name.c_str(), FILE_WRITE);
+     //unsigned int len = myfile.fileSize();
+     Serial.print(name);
+     Serial.print(" started with ");
+     //Serial.print(len);
+     Serial.println(" bytes");
+//     if (len > 0) {
+//       // reduce the file to zero if it already had data
+//       myfile.truncate();
+//     }
 
-    dataString += isIMUAvailable; dataString += ",";
-    for (int i = 0; i < 4; i++) 
-    {
-      dataString += String(quats_f[i], 7);
-      dataString += ",";
+//     if (myfile.preAllocate(106*1000*15*60)) {
+//       Serial.print("  Allocate" +String(106*1000*15*60)+" ");
+//     } else {
+//       Serial.print("  unable to preallocate this file");
+//     }
+
+
+     lastArmed = millis();
+     lastTime = millis();
+     lastFlush = millis();
+//     myfile.println("is anyone there?");
+//     myfile.close();
+//
+//     while(1) {};
+
+  }
+
+  if(millis() - lastFlush > 500 && armed) {
+    myfile.flush();
+    lastFlush = millis();
+    //Serial.println("flushing");
+  }
+
+  if (armed && channels[4] < 1000 && millis() - lastArmed > 500) {
+    armed = 0;
+    lastArmed = millis();
+    //close SD card
+    Serial.println("closing SD");
+    Serial.println(channels[4]);
+    myfile.close();
+  }
+  
+  if((isSbusAvailable || isLidarAvailable || isSonarAvailable || isGPSAvailable || isIMUAvailable) && armed) {
+//    String dataString = "";
+//    dataString += micros(); dataString += ",";
+//    dataString += armed; dataString += ",";
+//  
+//    dataString += isSbusAvailable; dataString += ",";
+//    dataString += channels[0]; dataString += ",";
+//    dataString += channels[1]; dataString += ",";
+//    dataString += channels[2]; dataString += ",";
+//    dataString += channels[3]; dataString += ",";
+//    dataString += channels[4]; dataString += ",";
+//    dataString += channels[5]; dataString += ",";
+//    dataString += channels[6]; dataString += ",";
+//    dataString += channels[7]; dataString += ",";
+//
+//    dataString += isLidarAvailable; dataString += ",";
+//    dataString += String(range, 7);
+//    dataString += ",";
+//
+//    dataString += isSonarAvailable; dataString += ",";
+//    dataString += String(sonarValue, 7);
+//    dataString += ",";
+//
+//    dataString += isGPSAvailable; dataString += ",";
+//    dataString += String(latitude, 15);
+//    dataString += ",";
+//    dataString += String(longitude, 15);
+//    dataString += ",";
+//    dataString += String(altitude, 15);
+//    dataString += ",";
+//    dataString += SIV; dataString += ",";
+//
+//    dataString += isIMUAvailable; dataString += ",";
+//    for (int i = 0; i < 4; i++) 
+//    {
+//      dataString += String(quats_f[i], 7);
+//      dataString += ",";
+//    }
+//    for (int i = 0; i < 3; i++) 
+//    {
+//      dataString += String(rates_f[i], 7);
+//      dataString += ",";
+//    }
+//    for (int i = 0; i < 3; i++) 
+//    {
+//      dataString += String(acc_f[i], 7);
+//      dataString += ",";
+//    }
+    int idx = 0;
+    dataMsg[idx] = 49; idx ++;
+    dataMsg[idx] = 50; idx++;
+    dataMsg[idx] = isSbusAvailable; idx++;
+    for (int i = 0; i < 8; i++) {
+      tmp.i = channels[i];
+      for (int j = 0; j < 4; j++) {
+        dataMsg[idx] = tmp.c[j];
+        idx++;
+      }
     }
-    for (int i = 0; i < 3; i++) 
-    {
-      dataString += String(rates_f[i], 7);
-      dataString += ",";
+    dataMsg[idx] = isLidarAvailable; idx++;
+    tmp.i = range;
+    for (int j = 0; j < 4; j++) {
+        dataMsg[idx] = tmp.c[j];
+        idx++;
     }
-    for (int i = 0; i < 3; i++) 
-    {
-      dataString += String(acc_f[i], 7);
-      dataString += ",";
+    dataMsg[idx] = isSonarAvailable; idx++;
+    tmp.i = sonarValue;
+    for (int j = 0; j < 4; j++) {
+        dataMsg[idx] = tmp.c[j];
+        idx++;
     }
+    dataMsg[idx] = isGPSAvailable; idx++;
+    tmp.i = latitude;
+    for (int j = 0; j < 4; j++) {
+      dataMsg[idx] = tmp.c[j];
+      idx++;
+    }
+    tmp.i = longitude;
+    for (int j = 0; j < 4; j++) {
+      dataMsg[idx] = tmp.c[j];
+      idx++;
+    }
+    tmp.i = altitude;
+    for (int j = 0; j < 4; j++) {
+      dataMsg[idx] = tmp.c[j];
+      idx++;
+    }
+    dataMsg[idx] = SIV; idx++;
 
-    Serial8.println(dataString);
-    Serial8.write(13);
-
+    dataMsg[idx] = isIMUAvailable; idx++;
+    for (int i = 0; i < 4; i++) {
+      tmp.f = quats_f[i];
+      for (int j = 0; j < 4; j++) {
+        dataMsg[idx] = tmp.c[j];
+        idx++;
+      }
+    }
+    for (int i = 0; i < 3; i++) {
+      tmp.f = rates_f[i];
+      for (int j = 0; j < 4; j++) {
+        dataMsg[idx] = tmp.c[j];
+        idx++;
+      }
+    }
+    for (int i = 0; i < 3; i++) {
+      tmp.f = acc_f[i];
+      for (int j = 0; j < 4; j++) {
+        dataMsg[idx] = tmp.c[j];
+        idx++;
+      }
+    }
+    tmp.i = micros();
+    for (int j = 0; j < 4; j++) {
+      dataMsg[idx] = tmp.c[j];
+      idx++;
+    }
+    dataMsg[idx] = 60; idx++;
+    dataMsg[idx] = 59; idx++;
+    
     isSbusAvailable = 0;
     isLidarAvailable = 0;
     isSonarAvailable = 0;
     isGPSAvailable = 0;
     isIMUAvailable = 0;
 
-    Serial.println(dataString);
+    lastTime = millis();
+
+    
+    //myfile.print("test csdfasdfasdfasdfasdfasd");
+    //Serial.println(millis()-lastTime);
+    //Threads::Mutex mylock;
+    //mylock.lock();
+    //Serial.println("writing to file");
+
+    if(myfile) {
+      myfile.write(dataMsg,106);
+
+    //myfile.println("why is this not working?");
+    }
+    else {
+      Serial.println("failed to write");
+    }
+//    Serial.println(millis() - lastTime);
+//    //mylock.unlock();
+//    Serial.println(dataString);
   }
+  //mylock.unlock();
+//  speedtest = micros();
   threads.yield();
 
 //  Serial.print(micros()-lastTime);
@@ -259,11 +463,18 @@ void loop() {
 
 void readSBUS() {
   if(x8r.read(&channels[0], &failSafe, &lostFrame)){
+
+    if(lostFrame) {
+      Serial.println("lost frame");
+    }
     isSbusAvailable = 1;
     // write the SBUS packet to an SBUS compatible servo
+    //Serial.println(channels[0]);
     int Ltime = micros();
     if (armed)
+    {
       x8r.write(channels);
+    }
     int timeElapsed = micros() - Ltime;
 //      Serial.println(timeElapsed);
   }
@@ -327,7 +538,10 @@ void readSBUS_thread()
 {
   while (1)
   {
+    Threads::Mutex mylock;
+    mylock.lock();
     readSBUS();
+    mylock.unlock();
     threads.yield();
   }
 }
@@ -346,6 +560,7 @@ void readSonar_thread()
   while (1)
   {
     readSonar();
+    threads.delay(10);
     threads.yield();
   }
 }
