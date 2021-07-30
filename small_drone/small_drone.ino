@@ -43,6 +43,7 @@ byte minSat = 0;
 long latitude;
 long longitude;
 long altitude;
+int PDOP, northVel, eastVel, downVel;
 byte SIV;
 bool isGPSAvailable = 0;
 
@@ -52,8 +53,9 @@ byte in[100];
 union {unsigned short s; byte b[2];} checksum;
 union {float f; char c[4]; int32_t i; uint32_t u;} tmp;
 union {double d; char c[8];} tmp_8;
-char dataMsg[106];
+char dataMsg[122];
 bool isIMUAvailable = 0;
+int bad_imu_chksum = 0;
 
 //blackbox setup
 //char dataString[150];
@@ -138,6 +140,7 @@ void setup() {
 
   myGPS.setNavigationFrequency(19);           //Set output to 10 times a second
   byte rate = myGPS.getNavigationFrequency(); //Get the update rate of this module
+  myGPS.setAutoPVT(true); //Tell the GPS to "send" each solution
   Serial.print("Current update rate:");
   Serial.println(rate);
   
@@ -191,7 +194,7 @@ void setup() {
 
 
   delay(1000);
-  threads.setSliceMicros(100);
+  threads.setSliceMicros(50);
   threads.addThread(readSBUS_thread);
   threads.addThread(readLidar_thread);
   threads.addThread(readSonar_thread);
@@ -348,6 +351,10 @@ void loop() {
     int idx = 0;
     dataMsg[idx] = 49; idx ++;
     dataMsg[idx] = 50; idx++;
+
+    Threads::Mutex mylock;
+    mylock.lock();
+    
     dataMsg[idx] = isSbusAvailable; idx++;
     for (int i = 0; i < 8; i++) {
       tmp.i = channels[i];
@@ -384,6 +391,31 @@ void loop() {
       dataMsg[idx] = tmp.c[j];
       idx++;
     }
+
+    tmp.i = northVel;
+    for (int j = 0; j < 4; j++) {
+      dataMsg[idx] = tmp.c[j];
+      idx++;
+    }
+
+    tmp.i = eastVel;
+    for (int j = 0; j < 4; j++) {
+      dataMsg[idx] = tmp.c[j];
+      idx++;
+    }
+
+    tmp.i = downVel;
+    for (int j = 0; j < 4; j++) {
+      dataMsg[idx] = tmp.c[j];
+      idx++;
+    }
+
+    tmp.i = PDOP;
+    for (int j = 0; j < 4; j++) {
+      dataMsg[idx] = tmp.c[j];
+      idx++;
+    }
+    
     dataMsg[idx] = SIV; idx++;
 
     dataMsg[idx] = isIMUAvailable; idx++;
@@ -413,6 +445,7 @@ void loop() {
       dataMsg[idx] = tmp.c[j];
       idx++;
     }
+    mylock.unlock();
     dataMsg[idx] = 60; idx++;
     dataMsg[idx] = 59; idx++;
     
@@ -432,7 +465,7 @@ void loop() {
     //Serial.println("writing to file");
 
     if(myfile) {
-      myfile.write(dataMsg,106);
+      myfile.write(dataMsg,122);
 
     //myfile.println("why is this not working?");
     }
@@ -471,10 +504,10 @@ void readSBUS() {
     // write the SBUS packet to an SBUS compatible servo
     //Serial.println(channels[0]);
     int Ltime = micros();
-    if (armed)
-    {
+    //if (armed)
+    //{
       x8r.write(channels);
-    }
+    //}
     int timeElapsed = micros() - Ltime;
 //      Serial.println(timeElapsed);
   }
@@ -499,6 +532,10 @@ void readGPS() {
     longitude = myGPS.getLongitude();
     altitude = myGPS.getAltitude();
     SIV = myGPS.getSIV();
+    PDOP = myGPS.getPDOP();
+    northVel = myGPS.getNedNorthVel();
+    eastVel = myGPS.getNedEastVel();
+    downVel = myGPS.getNedDownVel();
 
     isGPSAvailable = 1;
   }
@@ -551,6 +588,7 @@ void readLidar_thread()
   while (1)
   {
     readLidar();
+    threads.delay(20);
     threads.yield();
   }
 }
@@ -560,7 +598,7 @@ void readSonar_thread()
   while (1)
   {
     readSonar();
-    threads.delay(10);
+    threads.delay(20);
     threads.yield();
   }
 }
@@ -578,7 +616,10 @@ void readIMU_thread()
 {
   while (1)
   {
+    Threads::Mutex mylock;
+    mylock.lock();
     readIMU();
+    mylock.unlock();
     threads.yield();
   }
 }
@@ -632,6 +673,12 @@ void read_imu_data(void) {
         acc[4+i] = in[35 + i];
         acc[8+i] = in[39 + i];
       }
+      isIMUAvailable = 1;
+    }
+    else {
+      bad_imu_chksum++;
+      Serial.print("bad imu chksums: "); Serial.println(bad_imu_chksum);
+      return;
     }
 
     for (int i = 0; i < 4; i++)
@@ -657,6 +704,7 @@ void read_imu_data(void) {
         tmp.c[j] = acc[j+i*4];
       }
       acc_f[i] = tmp.f;
+      
     }
   }
 
@@ -668,7 +716,7 @@ int readIMU(void)
   }
   if (check == 1) {
     read_imu_data();
-    isIMUAvailable = 1;
+    
     return 1;
   }
   return 0;
